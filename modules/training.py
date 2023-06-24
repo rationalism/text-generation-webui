@@ -17,6 +17,7 @@ from peft import (LoraConfig, get_peft_model, prepare_model_for_int8_training,
 from modules import shared, ui
 from modules.evaluate import calculate_perplexity, generate_markdown_table, save_past_evaluations
 from server import get_available_loras, get_available_models
+from transformers import TrainerCallback
 
 # This mapping is from a very recent commit, not yet released.
 # If not available, default to a backup map for some common model types.
@@ -193,6 +194,8 @@ def clean_path(base_path: str, path: str):
 
 
 def do_train(lora_name: str, always_override: bool, save_steps: int, micro_batch_size: int, batch_size: int, epochs: int, learning_rate: str, lr_scheduler_type: str, lora_rank: int, lora_alpha: int, lora_dropout: float, cutoff_len: int, dataset: str, eval_dataset: str, format: str, eval_steps: int, raw_text_file: str, overlap_len: int, newline_favor_len: int, higher_rank_limit: bool, warmup_steps: int, optimizer: str):
+    from datasets import disable_caching
+    disable_caching()
 
     if shared.args.monkey_patch:
         from monkeypatch.peft_tuners_lora_monkey_patch import \
@@ -249,6 +252,7 @@ def do_train(lora_name: str, always_override: bool, save_steps: int, micro_batch
 
     def tokenize(prompt):
         result = shared.tokenizer(prompt, truncation=True, max_length=cutoff_len + 1, padding="max_length")
+
         return {
             "input_ids": result["input_ids"][:-1],
             "attention_mask": result["attention_mask"][:-1],
@@ -302,7 +306,7 @@ def do_train(lora_name: str, always_override: bool, save_steps: int, micro_batch
 
         logging.info("Loading JSON datasets...")
         data = load_dataset("json", data_files=clean_path('training/datasets', f'{dataset}.json'))
-        train_data = data['train'].map(generate_and_tokenize_prompt)
+        train_data = data['train'].map(generate_and_tokenize_prompt, num_proc=24)
 
         if eval_dataset == 'None':
             eval_data = None
@@ -328,6 +332,7 @@ def do_train(lora_name: str, always_override: bool, save_steps: int, micro_batch
     try:
         logging.info("Creating LoRA model...")
         lora_model = get_peft_model(shared.model, config)
+        lora_model.print_trainable_parameters()
         if not always_override and Path(f"{lora_file_path}/adapter_model.bin").is_file():
             logging.info("Loading existing LoRA data...")
             state_dict_peft = torch.load(f"{lora_file_path}/adapter_model.bin")
@@ -375,19 +380,20 @@ def do_train(lora_name: str, always_override: bool, save_steps: int, micro_batch
         eval_dataset=eval_data,
         args=transformers.TrainingArguments(
             per_device_train_batch_size=micro_batch_size,
+            per_device_eval_batch_size=micro_batch_size,
             gradient_accumulation_steps=gradient_accumulation_steps,
             warmup_steps=math.ceil(warmup_steps / gradient_accumulation_steps),
             num_train_epochs=epochs,
             learning_rate=actual_lr,
             fp16=False if shared.args.cpu else True,
             optim=optimizer,
-            logging_steps=5,
+            logging_steps=1,
             evaluation_strategy="steps" if eval_data is not None else "no",
             eval_steps=math.ceil(eval_steps / gradient_accumulation_steps) if eval_data is not None else None,
             save_strategy="no",
             output_dir=lora_file_path,
             lr_scheduler_type=lr_scheduler_type,
-            load_best_model_at_end=True if eval_data is not None else False,
+            load_best_model_at_end=False,
             # TODO: Enable multi-device support
             ddp_find_unused_parameters=None,
             no_cuda=shared.args.cpu

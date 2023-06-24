@@ -12,6 +12,8 @@ from autograd_4bit import (Autograd4bitQuantLinear,
 from monkeypatch.peft_tuners_lora_monkey_patch import (
     Linear4bitLt, replace_peft_model_with_gptq_lora_model)
 
+from gradient_checkpointing import apply_gradient_checkpointing
+
 from modules import shared
 from modules.GPTQ_loader import find_quantized_model_file
 
@@ -35,5 +37,7 @@ def load_model_llama(model_name):
     model.half()
     wrapper = AMPWrapper(model)
     wrapper.apply_generate()
+
+    apply_gradient_checkpointing(model)
 
     return model, tokenizer
