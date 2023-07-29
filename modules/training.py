@@ -14,9 +14,9 @@ from datasets import Dataset, load_dataset
 from peft import (LoraConfig, get_peft_model, prepare_model_for_kbit_training,
                   set_peft_model_state_dict)
 
-from modules import shared, ui
+from modules import shared, ui, utils
+from modules.logging_colors import logger
 from modules.evaluate import calculate_perplexity, generate_markdown_table, save_past_evaluations
-from server import get_available_loras, get_available_models
 from transformers import TrainerCallback
 
 # This mapping is from a very recent commit, not yet released.
@@ -198,7 +198,7 @@ def clean_path(base_path: str, path: str):
     return f'{Path(base_path).absolute()}/{path}'
 
 
-def do_train(lora_name: str, always_override: bool, save_steps: int, micro_batch_size: int, batch_size: int, epochs: int, learning_rate: str, lr_scheduler_type: str, lora_rank: int, lora_alpha: int, lora_dropout: float, cutoff_len: int, dataset: str, eval_dataset: str, format: str, eval_steps: int, raw_text_file: str, overlap_len: int, newline_favor_len: int, higher_rank_limit: bool, warmup_steps: int, optimizer: str):
+def do_train(lora_name: str, always_override: bool, save_steps: int, micro_batch_size: int, batch_size: int, epochs: int, learning_rate: str, lr_scheduler_type: str, lora_rank: int, lora_alpha: int, lora_dropout: float, cutoff_len: int, dataset: str, eval_dataset: str, format: str, eval_steps: int, raw_text_file: str, overlap_len: int, newline_favor_len: int, higher_rank_limit: bool, warmup_steps: int, optimizer: str, hard_cut_string: str, train_only_after: str):
     from datasets import disable_caching
     disable_caching()
 
@@ -262,8 +262,6 @@ def do_train(lora_name: str, always_override: bool, save_steps: int, micro_batch
         return result
 
     def tokenize(prompt):
-        result = shared.tokenizer(prompt, truncation=True, max_length=cutoff_len + 1, padding="max_length")
-
         if train_only_after == '' or train_only_after not in prompt:
             input_ids = encode(prompt, True)
             input_ids = [shared.tokenizer.pad_token_id] * (cutoff_len - len(input_ids)) + input_ids
@@ -363,7 +361,8 @@ def do_train(lora_name: str, always_override: bool, save_steps: int, micro_batch
     # == Start prepping the model itself ==
     if not hasattr(shared.model, 'lm_head') or hasattr(shared.model.lm_head, 'weight'):
         logger.info("Getting model ready...")
-        prepare_model_for_kbit_training(shared.model)
+        prepare_model_for_kbit_training(shared.model, use_gradient_checkpointing=True)
+    shared.model.gradient_checkpointing = True
 
     logger.info("Prepping for training...")
     config = LoraConfig(
@@ -435,10 +434,12 @@ def do_train(lora_name: str, always_override: bool, save_steps: int, micro_batch
             per_device_train_batch_size=micro_batch_size,
             per_device_eval_batch_size=micro_batch_size,
             gradient_accumulation_steps=gradient_accumulation_steps,
+            gradient_checkpointing=True,
             warmup_steps=math.ceil(warmup_steps / gradient_accumulation_steps),
             num_train_epochs=epochs,
             learning_rate=actual_lr,
-            fp16=False if shared.args.cpu else True,
+            # fp16=False if shared.args.cpu else True,
+            bf16=True,
             optim=optimizer,
             logging_steps=1,
             evaluation_strategy="steps" if eval_data is not None else "no",
