@@ -28,6 +28,8 @@ from peft import (
     set_peft_model_state_dict
 )
 
+import bitsandbytes as bnb
+
 from modules import shared, ui, utils
 from modules.logging_colors import logger
 from modules.evaluate import calculate_perplexity, generate_markdown_table, save_past_evaluations
@@ -88,7 +90,7 @@ def create_train_interface():
         lora_rank = gr.Slider(label='LoRA Rank', value=32, minimum=0, maximum=1024, step=4, info='LoRA Rank, or dimension count. Higher values produce a larger file with better control over the model\'s content. Smaller values produce a smaller file with less overall control. Small values like 4 or 8 are great for stylistic guidance, higher values like 128 or 256 are good for teaching content upgrades, extremely high values (1024+) are difficult to train but may improve fine-detail learning for large datasets. Higher ranks also require higher VRAM.')
         lora_alpha = gr.Slider(label='LoRA Alpha', value=64, minimum=0, maximum=2048, step=4, info='LoRA Alpha. This divided by the rank becomes the scaling of the LoRA. Higher means stronger. A good standard value is twice your Rank.')
 
-        cutoff_len = gr.Slider(label='Cutoff Length', minimum=0, maximum=2048, value=256, step=32, info='Cutoff length for text input. Essentially, how long of a line of text to feed in at a time. Higher values require drastically more VRAM.')
+        cutoff_len = gr.Slider(label='Cutoff Length', minimum=0, maximum=4096, value=256, step=32, info='Cutoff length for text input. Essentially, how long of a line of text to feed in at a time. Higher values require drastically more VRAM.')
 
         with gr.Tab(label='Formatted Dataset'):
             with gr.Row():
@@ -339,7 +341,7 @@ def do_train(lora_name: str, always_override: bool, save_steps: int, micro_batch
             if append_eos_token and input_ids[-1] != shared.tokenizer.eos_token_id and len(input_ids) < cutoff_len:
                 input_ids.append(shared.tokenizer.eos_token_id)
 
-            input_ids = [shared.tokenizer.pad_token_id] * (cutoff_len - len(input_ids)) + input_ids
+            # input_ids = [shared.tokenizer.pad_token_id] * (cutoff_len - len(input_ids)) + input_ids
             labels = [1] * len(input_ids)
 
         else:
@@ -363,7 +365,7 @@ def do_train(lora_name: str, always_override: bool, save_steps: int, micro_batch
         return {
             "input_ids": input_ids,
             "labels": labels,
-            "attention_mask": input_ids.ne(shared.tokenizer.pad_token_id),
+            # "attention_mask": input_ids.ne(shared.tokenizer.pad_token_id),
         }
 
     train_template.clear()
@@ -489,6 +491,17 @@ def do_train(lora_name: str, always_override: bool, save_steps: int, micro_batch
 
     # base model is now frozen and should not be reused for any other LoRA training than this one
     shared.model_dirty_from_training = True
+    def find_all_linear_names(args, model):
+        cls = bnb.nn.Linear4bit if args.load_in_4bit else (bnb.nn.Linear8bitLt if args.load_in_8bit else torch.nn.Linear)
+        lora_module_names = set()
+        for name, module in model.named_modules():
+            if isinstance(module, cls):
+                names = name.split('.')
+                lora_module_names.add(names[0] if len(names) == 1 else names[-1])
+
+        if 'lm_head' in lora_module_names:  # needed for 16-bit
+            lora_module_names.remove('lm_head')
+        return list(lora_module_names)
 
     logger.info("Prepping for training...")
     config = LoraConfig(
@@ -588,13 +601,14 @@ def do_train(lora_name: str, always_override: bool, save_steps: int, micro_batch
             fp16=False if shared.args.cpu else True,
             # bf16=True,
             optim=optimizer,
-            logging_steps=2 if stop_at_loss > 0 else 5,
+            logging_steps=1,
             evaluation_strategy="steps" if eval_data is not None else "no",
             eval_steps=math.ceil(eval_steps / gradient_accumulation_steps) if eval_data is not None else None,
             save_strategy="steps" if eval_data is not None else "no",
+            save_total_limit=5,
             output_dir=lora_file_path,
             lr_scheduler_type=lr_scheduler_type,
-            load_best_model_at_end=eval_data is not None,
+            # load_best_model_at_end=eval_data is not None,
             # TODO: Enable multi-device support
             ddp_find_unused_parameters=None,
             no_cuda=shared.args.cpu,

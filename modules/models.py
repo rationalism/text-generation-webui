@@ -188,6 +188,11 @@ def huggingface_loader(model_name):
                 logger.warning("Using the following 4-bit params: " + str(quantization_config_params))
                 params['quantization_config'] = BitsAndBytesConfig(**quantization_config_params)
 
+                if shared.args.bf16:
+                    params["torch_dtype"] = torch.bfloat16
+                else:
+                    params["torch_dtype"] = torch.float16
+
             elif shared.args.load_in_8bit and any((shared.args.auto_devices, shared.args.gpu_memory)):
                 params['quantization_config'] = BitsAndBytesConfig(load_in_8bit=True, llm_int8_enable_fp32_cpu_offload=True)
             elif shared.args.load_in_8bit:

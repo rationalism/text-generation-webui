@@ -1,3 +1,6 @@
 [submodule "repositories/alpaca_lora_4bit"]
 	path = repositories/alpaca_lora_4bit
 	url = https://github.com/johnsmith0031/alpaca_lora_4bit
+[submodule "bitsandbytes"]
+	path = bitsandbytes
+	url = https://github.com/TimDettmers/bitsandbytes
